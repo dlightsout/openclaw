@@ -468,6 +468,29 @@ export async function runMemoryFlushIfNeeded(params: {
     return params.sessionEntry;
   }
 
+  // Ensure the memory directory and target file exist before the flush agent
+  // run starts.  The flush agent is given both `read` and `write` tools and
+  // the LLM will typically `read` the target file first to decide whether to
+  // append.  If the file does not exist yet the read tool's `fs.access` call
+  // throws ENOENT and the error surfaces as a noisy "[tools] read failed"
+  // log entry (see #48599).
+  const workspaceDir = params.followupRun.run.workspaceDir;
+  if (workspaceDir) {
+    try {
+      const targetAbsPath = path.resolve(workspaceDir, memoryFlushWritePath);
+      await fs.promises.mkdir(path.dirname(targetAbsPath), { recursive: true });
+      // Create the file only if it does not already exist (wx = exclusive create).
+      const handle = await fs.promises.open(targetAbsPath, "wx");
+      await handle.close();
+    } catch (err) {
+      // EEXIST is expected when the file already exists; ignore it.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        logVerbose(`memoryFlush: failed to ensure target file: ${String(err)}`);
+      }
+    }
+  }
+  
+
   const memoryFlushWritable = (() => {
     if (!params.sessionKey) {
       return true;
